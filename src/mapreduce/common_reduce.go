@@ -1,5 +1,12 @@
 package mapreduce
 
+import (
+	"encoding/json"
+	"fmt"
+	"os"
+	"sort"
+)
+
 func doReduce(
 	jobName string, // the name of the whole MapReduce job
 	reduceTask int, // which reduce task this is
@@ -44,4 +51,50 @@ func doReduce(
 	//
 	// Your code here (Part I).
 	//
+
+	var err error
+	//var kvs KeyValues
+	var keys []string
+	files := make([]*os.File, nMap)
+	dncs := make([]*json.Decoder, nMap)
+	mapKVS := make(map[string][]string)
+	for i := 0; i < nMap; i++ {
+		fileName := reduceName(jobName, i, reduceTask)
+		files[i], err = os.Open(fileName)
+		if err != nil {
+			fmt.Printf("Open failed for file %s\n", fileName)
+			return
+		}
+		dncs[i] = json.NewDecoder(files[i])
+
+		for {
+			var kv KeyValue
+			if err := dncs[i].Decode(&kv); err != nil {
+				break
+			}
+			if _, exist := mapKVS[kv.Key]; !exist {
+				keys = append(keys, kv.Key)
+			}
+			mapKVS[kv.Key] = append(mapKVS[kv.Key], kv.Value)
+			//kvs = append(kvs, kv)
+
+		}
+	}
+
+	//mapKvs := make(map[string][]string)
+	sort.Strings(keys)
+	out, _ := os.Create(outFile)
+	defer out.Close()
+	enc := json.NewEncoder(out)
+
+	for _, key := range keys {
+		res := reduceF(key, mapKVS[key])
+		enc.Encode(KeyValue{key, res})
+	}
+
+	for _, file := range files {
+		file.Close()
+	}
+	//fmt.Printf("len : %d, count : %d", len(kvs), count)
+
 }
