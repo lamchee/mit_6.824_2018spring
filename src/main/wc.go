@@ -23,6 +23,7 @@ func mapF(filename string, contents string) []mapreduce.KeyValue {
 		kv.Key = key
 		kv.Value = "1"
 		kvs = append(kvs, kv)
+
 	}
 	return kvs
 }
