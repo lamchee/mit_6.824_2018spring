@@ -95,25 +95,25 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 		}(worker, args)
 	}
 
-	ticker1 := time.NewTicker(2 * time.Second)
-	for k := 0; k < 2; k++ {
-		if k == 0 {
-			select {
-			case registerChan <- "wo":
-				fmt.Printf("Schedule: Write channel ok!\n")
-			case <-ticker1.C:
-				fmt.Printf("Schedule: Write channel timeout!\n")
-			}
-		} else {
-			select {
-			case tmp := <-registerChan:
-				fmt.Printf("Schedule: Read channel ok!%s\n", tmp)
-			case <-ticker1.C:
-				fmt.Printf("Schedule: Read channel timeout!\n")
-			}
-		}
+	/* 	ticker1 := time.NewTicker(2 * time.Second)
+	   	for k := 0; k < 2; k++ {
+	   		if k == 0 {
+	   			select {
+	   			case registerChan <- "wo":
+	   				fmt.Printf("Schedule: Write channel ok!\n")
+	   			case <-ticker1.C:
+	   				fmt.Printf("Schedule: Write channel timeout!\n")
+	   			}
+	   		} else {
+	   			select {
+	   			case tmp := <-registerChan:
+	   				fmt.Printf("Schedule: Read channel ok!%s\n", tmp)
+	   			case <-ticker1.C:
+	   				fmt.Printf("Schedule: Read channel timeout!\n")
+	   			}
+	   		}
 
-	}
-	ticker1.Stop()
+	   	}
+	   	ticker1.Stop() */
 	fmt.Printf("Schedule: %v done\n", phase)
 }
