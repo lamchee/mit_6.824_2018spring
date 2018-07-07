@@ -3,6 +3,7 @@ package mapreduce
 import (
 	"fmt"
 	"sync"
+	"time"
 )
 
 //
@@ -47,9 +48,9 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	}()
 
 	for i := range taskChan {
-		fmt.Printf("Try to catch a worker, current task index : %d\n", i)
+		fmt.Printf("Schedule: Try to catch a worker, current task index : %d\n", i)
 		worker := <-registerChan
-		fmt.Printf("Dispatch work, taskNumber : %d, worker : [%s]\n", i, worker)
+		fmt.Printf("Schedule: Dispatch work, taskNumber : %d, worker : [%s]\n", i, worker)
 
 		var args DoTaskArgs
 		args.JobName = jobName
@@ -57,17 +58,56 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 		args.Phase = phase
 		args.TaskNumber = i
 		args.File = mapFiles[i]
-		go func(w string, tasks int, args DoTaskArgs) {
-			defer wg.Done()
-			fmt.Printf("Going to process job, worker : [%s], taskNumber : %d\n", worker, args.TaskNumber)
+		go func(w string, args DoTaskArgs) {
+			fmt.Printf("Schedule: Going to process job, worker : [%s], taskNumber : %d\n", worker, args.TaskNumber)
 			if call(worker, "Worker.DoTask", args, nil) {
-				registerChan <- worker
-				fmt.Printf("Job done! worker : [%s], taskNumber : %d\n", worker, args.TaskNumber)
+				go func(w string, task int) {
+					defer wg.Done()
+					ticker := time.NewTicker(1 * time.Second)
+				loop:
+					for j := 0; j < 3; j++ {
+						fmt.Printf("Schedule: %d's time to wait put worker back to channel, taskNumber : %d, worker : %s\n", j, task, w)
+						select {
+						case registerChan <- w:
+							fmt.Printf("Schedule: Put worker back to channel, taskNumber : %d, worker : %s \n", task, w)
+							break loop
+						case <-ticker.C:
+							fmt.Printf("Schedule: Wait put worker back to channel timeout, taskNumber : %d, worker : %s\n", task, w)
+						}
+					}
+					ticker.Stop()
+				}(worker, args.TaskNumber)
+
+				//registerChan <- worker
+				fmt.Printf("Schedule: Job done! worker : [%s], taskNumber : %d\n", worker, args.TaskNumber)
+
 			} else {
-				taskChan <- tasks
-				fmt.Printf("Job failed! worker : [%s], taskNumber : %d\n", worker, args.TaskNumber)
+				fmt.Printf("Schedule: Put task back to channel, worker : [%s], taskNumber : %d\n", worker, args.TaskNumber)
+				taskChan <- args.TaskNumber
+				fmt.Printf("Schedule: Job failed! worker : [%s], taskNumber : %d\n", worker, args.TaskNumber)
 			}
-		}(worker, ntasks, args)
+		}(worker, args)
 	}
+
+	ticker1 := time.NewTicker(2 * time.Second)
+	for k := 0; k < 2; k++ {
+		if k == 0 {
+			select {
+			case registerChan <- "wo":
+				fmt.Printf("Schedule: Write channel ok!\n")
+			case <-ticker1.C:
+				fmt.Printf("Schedule: Write channel timeout!\n")
+			}
+		} else {
+			select {
+			case tmp := <-registerChan:
+				fmt.Printf("Schedule: Read channel ok!%s\n", tmp)
+			case <-ticker1.C:
+				fmt.Printf("Schedule: Read channel timeout!\n")
+			}
+		}
+
+	}
+	ticker1.Stop()
 	fmt.Printf("Schedule: %v done\n", phase)
 }
