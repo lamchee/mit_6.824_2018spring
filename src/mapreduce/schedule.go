@@ -57,7 +57,13 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 		args.NumOtherPhase = n_other
 		args.Phase = phase
 		args.TaskNumber = i
-		args.File = mapFiles[i]
+		switch phase {
+		case mapPhase:
+			args.File = mapFiles[i]
+		case reducePhase:
+			args.File = mergeName(jobName, i)
+		}
+
 		go func(w string, args DoTaskArgs) {
 			fmt.Printf("Schedule: Going to process job, worker : [%s], taskNumber : %d\n", worker, args.TaskNumber)
 			if call(worker, "Worker.DoTask", args, nil) {
