@@ -143,6 +143,7 @@ func RunWorker(MasterAddress string, me string,
 		wk.Lock()
 		if wk.nRPC == 0 {
 			wk.Unlock()
+			fmt.Printf("RunWorker %s begin to exit\n", me)
 			break
 		}
 		wk.Unlock()
@@ -151,11 +152,12 @@ func RunWorker(MasterAddress string, me string,
 			wk.Lock()
 			wk.nRPC--
 			wk.Unlock()
+			fmt.Printf("RunWorker %s try to accept task\n", me)
 			go rpcs.ServeConn(conn)
 		} else {
 			break
 		}
 	}
 	wk.l.Close()
-	debug("RunWorker %s exit\n", me)
+	fmt.Printf("RunWorker %s exit\n", me)
 }

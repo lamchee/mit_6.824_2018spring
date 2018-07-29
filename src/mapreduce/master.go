@@ -89,6 +89,7 @@ func (mr *Master) forwardRegistrations(ch chan string) {
 		if len(mr.workers) > i {
 			// there's a worker that we haven't told schedule() about.
 			w := mr.workers[i]
+			fmt.Printf("Master::forwardRegistrations Receive a worker : %s\n", w)
 			go func() { ch <- w }() // send without holding the lock.
 			i = i + 1
 		} else {

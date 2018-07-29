@@ -20,10 +20,10 @@ func schedule(jobName string, mapFiles []string, nReduce int, phase jobPhase, re
 	var n_other int // number of inputs (for reduce) or outputs (for map)
 	switch phase {
 	case mapPhase:
-		ntasks = len(mapFiles)
+		ntasks = len(mapFiles) //the number of M task
 		n_other = nReduce
 	case reducePhase:
-		ntasks = nReduce
+		ntasks = nReduce //the number of R tasks
 		n_other = len(mapFiles)
 	}
 
