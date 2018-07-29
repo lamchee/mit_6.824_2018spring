@@ -17,13 +17,15 @@ package raft
 //   in the same server.
 //
 
-import "sync"
-import "labrpc"
+import (
+	"labrpc"
+	"math/rand"
+	"sync"
+	"time"
+)
 
 // import "bytes"
 // import "labgob"
-
-
 
 //
 // as each Raft peer becomes aware that successive log entries are
@@ -42,6 +44,21 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
+type LogEntry struct {
+	term    int
+	Command interface{}
+}
+
+//
+type Role int
+
+//
+const (
+	Leader Role = iota
+	Candidate
+	Follower
+)
+
 //
 // A Go object implementing a single Raft peer.
 //
@@ -54,7 +71,23 @@ type Raft struct {
 	// Your data here (2A, 2B, 2C).
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
+	currentTerm int
+	votedFor    *labrpc.ClientEnd
+	log         []LogEntry
 
+	commitIndex int
+	lastApplied int
+
+	nextIndex  map[*labrpc.ClientEnd]int
+	matchIndex map[*labrpc.ClientEnd]int
+
+	role Role
+
+	heatBeatCh chan bool
+	votedCh    chan bool
+
+	//lastHeartBeatTime  time.Time
+	//lastVotedTime time.Time
 }
 
 // return currentTerm and whether this server
@@ -64,9 +97,10 @@ func (rf *Raft) GetState() (int, bool) {
 	var term int
 	var isleader bool
 	// Your code here (2A).
+	term = rf.currentTerm
+	isleader = (rf.role == Leader)
 	return term, isleader
 }
-
 
 //
 // save Raft's persistent state to stable storage,
@@ -83,7 +117,6 @@ func (rf *Raft) persist() {
 	// data := w.Bytes()
 	// rf.persister.SaveRaftState(data)
 }
-
 
 //
 // restore previously persisted state.
@@ -107,15 +140,16 @@ func (rf *Raft) readPersist(data []byte) {
 	// }
 }
 
-
-
-
 //
 // example RequestVote RPC arguments structure.
 // field names must start with capital letters!
 //
 type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
+	Term         int
+	CandidateID  *labrpc.ClientEnd
+	LastLogIndex int
+	LastLogTerm  int
 }
 
 //
@@ -124,6 +158,50 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
+	Term        int
+	VoteGranted bool
+}
+
+type AppendEntriesArgs struct {
+	Term         int
+	LeaderID     int
+	PrevLogIndex int
+	PrevLogTerm  int
+	LeaderCommit int
+	log          []LogEntry
+}
+
+//
+type AppendEntriesReply struct {
+	Term    int
+	Success bool
+}
+
+//
+func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
+	rf.heatBeatCh <- true
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	rf.role = Follower
+	reply.Term = rf.currentTerm
+	if args.Term < rf.currentTerm {
+		reply.Success = false
+	} else if len(args.log) == 0 {
+		reply.Success = true
+	} else if rf.log[args.PrevLogIndex].term != args.PrevLogTerm {
+		reply.Success = false
+	} else if rf.log[args.PrevLogIndex+1].term != args.Term {
+		rf.log = rf.log[:args.PrevLogIndex+1]
+		rf.log = append(rf.log, args.log[:])
+		if args.LeaderCommit > rf.commitIndex {
+			rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
+		}
+		if rf.commitIndex > rf.lastApplied {
+			rf.lastApplied++
+		}
+		reply.Success = true
+	}
+
 }
 
 //
@@ -131,6 +209,25 @@ type RequestVoteReply struct {
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
+	rf.votedCh <- true
+
+	rf.mu.Lock()
+	defer rf.mu.Unlock()
+	if args.Term < rf.currentTerm {
+		reply.VoteGranted = false
+		reply.Term = rf.currentTerm
+	} else if rf.votedFor == nil || rf.votedFor == args.CandidateID {
+		if args.LastLogTerm > rf.currentTerm {
+			reply.VoteGranted = true
+			rf.role = Follower
+		} else if args.LastLogIndex >= len(rf.log) {
+			reply.VoteGranted = true
+			rf.role = Follower
+		} else {
+			reply.VoteGranted = false
+			reply.Term = rf.currentTerm
+		}
+	}
 }
 
 //
@@ -167,7 +264,6 @@ func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *Reques
 	return ok
 }
 
-
 //
 // the service using Raft (e.g. a k/v server) wants to start
 // agreement on the next command to be appended to Raft's log. if this
@@ -188,7 +284,6 @@ func (rf *Raft) Start(command interface{}) (int, int, bool) {
 	isLeader := true
 
 	// Your code here (2B).
-
 
 	return index, term, isLeader
 }
@@ -225,7 +320,85 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.role = Follower
+	go func(raft *Raft) {
+		random := rand.New(time.Now().UnixNano())
+		for {
 
-
+			if raft.role == Follower {
+				timeout := 150 + random.Intn(150)
+				ticker := time.NewTicker(timeout * time.Second)
+				select {
+				case <-rf.heatBeatCh:
+					ticker.Stop()
+				case <-rf.votedCh:
+					ticker.Stop()
+				case <-ticker.C:
+					//timeout
+					raft.mu.Lock()
+					defer raft.mu.Unlock()
+					raft.role = Candidate
+					raft.votedFor = raft.peers[me]
+				}
+			}
+			if raft.role == Candidate {
+				raft.currentTerm++
+				go func() {
+					votedCount := 0
+					for index, peer := range raft.peers {
+						args := RequestVoteArgs{
+							raft.currentTerm,
+							raft.peers[me],
+							len(raft.log) - 1,
+							raft.log[len(raft.log)-1].term,
+						}
+						var reply RequestVoteReply
+						if ok := raft.sendRequestVote(index, &args, &reply); !ok {
+							continue
+						}
+						if reply.VoteGranted {
+							votedCount++
+						}
+						if votedCount >= len(peers)/2+1 {
+							raft.role = Leader
+						}
+					}
+				}()
+			}
+			if raft.role == Leader {
+				commitedCount := 0
+				for index, peer := range raft.peers {
+					if peer == raft.peers[me] {
+						continue
+					}
+					args := AppendEntriesArgs{raft.currentTerm,
+						raft.me,
+						raft.nextIndex[peer],
+						raft.log[raft.nextIndex[peer]].term,
+						raft.commitIndex,
+						nil,
+					}
+					var reply AppendEntriesReply
+					if ok := rf.peers[index].Call("Raft.AppendEntries", &args, &reply); ok {
+						if reply.Term == raft.currentTerm {
+							if reply.Success {
+								raft.nextIndex[peer] = len(raft.log) + 1
+								raft.matchIndex[peer] = len(raft.log)
+								if raft.matchIndex[peer] >= raft.commitIndex {
+									commitedCount++
+								}
+							} else {
+								raft.nextIndex[peer]--
+							}
+						}
+					}
+				}
+				// commit
+				if commitedCount > len(raft.peers)/2+1 && raft.log[len(raft.log)].term == raft.currentTerm {
+					raft.commitIndex = len(raft.log)
+				}
+			}
+		}
+	}(rf)
 	return rf
 }
