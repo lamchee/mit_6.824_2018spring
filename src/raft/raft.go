@@ -44,6 +44,7 @@ type ApplyMsg struct {
 	CommandIndex int
 }
 
+//日志条目结构
 type LogEntry struct {
 	term    int
 	Command interface{}
@@ -52,7 +53,7 @@ type LogEntry struct {
 //
 type Role int
 
-//
+// 节点角色
 const (
 	Leader Role = iota
 	Candidate
@@ -72,19 +73,20 @@ type Raft struct {
 	// Look at the paper's Figure 2 for a description of what
 	// state a Raft server must maintain.
 	currentTerm int
-	votedFor    *labrpc.ClientEnd
+	votedFor    *labrpc.ClientEnd //投给谁
 	log         []LogEntry
 
 	commitIndex int
 	lastApplied int
 
+	//领导者使用的成员
 	nextIndex  map[*labrpc.ClientEnd]int
 	matchIndex map[*labrpc.ClientEnd]int
 
-	role Role
+	role Role //标识节点当前的角色
 
-	heatBeatCh chan bool
-	votedCh    chan bool
+	heatBeatCh chan bool //心跳channel
+	votedCh    chan bool //投票channel
 
 	//lastHeartBeatTime  time.Time
 	//lastVotedTime time.Time
@@ -148,8 +150,8 @@ type RequestVoteArgs struct {
 	// Your data here (2A, 2B).
 	Term         int
 	CandidateID  *labrpc.ClientEnd
-	LastLogIndex int
-	LastLogTerm  int
+	LastLogIndex int //候选人的最后日志条目的索引值
+	LastLogTerm  int //候选人最后日志条目的任期号
 }
 
 //
@@ -158,8 +160,8 @@ type RequestVoteArgs struct {
 //
 type RequestVoteReply struct {
 	// Your data here (2A).
-	Term        int
-	VoteGranted bool
+	Term        int  //当前任期号，以便于候选人去更新自己的任期号
+	VoteGranted bool //候选人赢得了此张选票时为真
 }
 
 type AppendEntriesArgs struct {
@@ -213,21 +215,29 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	if args.Term < rf.currentTerm {
-		reply.VoteGranted = false
-		reply.Term = rf.currentTerm
-	} else if rf.votedFor == nil || rf.votedFor == args.CandidateID {
+
+	DPrintf("request incoming.[method :RequestVote] CandidateID: %s, LastLogTerm : %d, LastLogIndex : %d,currentTerm : %d,currentLogLength : %d\n", args.CandidateID, args.LastLogTerm, args.LastLogIndex, len(rf.log))
+
+	if args.Term < rf.currentTerm { //对方的任期号比自己的还要小
+	} else if rf.votedFor == nil || rf.votedFor == args.CandidateID { //如果还没投过票 或者之前已经投过给他
 		if args.LastLogTerm > rf.currentTerm {
 			reply.VoteGranted = true
 			rf.role = Follower
-		} else if args.LastLogIndex >= len(rf.log) {
-			reply.VoteGranted = true
-			rf.role = Follower
-		} else {
-			reply.VoteGranted = false
-			reply.Term = rf.currentTerm
+			DPrintf("Agree to vote. CandidateID : %s", args.CandidateID)
+		} else if args.LastLogTerm == rf.currentTerm {
+			if args.LastLogIndex >= len(rf.log) {
+				reply.VoteGranted = true
+				rf.role = Follower
+				DPrintf("Agree to vote. CandidateID : %s", args.CandidateID)
+				return
+			}
 		}
 	}
+
+	reply.VoteGranted = false
+	reply.Term = rf.currentTerm
+	DPrintf("Reject to vote. CandidateID : %s", args.CandidateID)
+	return
 }
 
 //
@@ -322,7 +332,7 @@ func Make(peers []*labrpc.ClientEnd, me int,
 	rf.readPersist(persister.ReadRaftState())
 	rf.role = Follower
 	go func(raft *Raft) {
-		random := rand.New(time.Now().UnixNano())
+		random := rand.New(time.Now())
 		for {
 
 			if raft.role == Follower {
