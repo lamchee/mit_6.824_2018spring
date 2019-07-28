@@ -74,19 +74,19 @@ type Raft struct {
 	// state a Raft server must maintain.
 	currentTerm int
 	votedFor    *labrpc.ClientEnd //投给谁
-	log         []LogEntry
+	log         []LogEntry        //0号索引存储0 term，命令为空
 
-	commitIndex int
-	lastApplied int
+	commitIndex int //已知的最大的已经被提交的日志条目的索引值
+	lastApplied int //如果commitIndex > lastApplied，那么就 lastApplied 加一，并把log[lastApplied]应用到状态机中
 
 	//领导者使用的成员
-	nextIndex  map[*labrpc.ClientEnd]int
-	matchIndex map[*labrpc.ClientEnd]int
+	nextIndex  map[*labrpc.ClientEnd]int //对于每一个服务器，需要发送给他的下一个日志条目的索引值（初始化为领导人最后索引值加一），假设已提交的索引值为7，那么下次要发送出去的索引值就是8
+	matchIndex map[*labrpc.ClientEnd]int //对于每一个服务器，已经复制给他的日志的最高索引值
 
 	role Role //标识节点当前的角色
 
-	heatBeatCh chan bool //心跳channel
-	votedCh    chan bool //投票channel
+	heartBeatCh chan struct{} //心跳channel
+	votedCh     chan bool     //投票channel
 
 	//lastHeartBeatTime  time.Time
 	//lastVotedTime time.Time
@@ -169,7 +169,7 @@ type AppendEntriesArgs struct {
 	LeaderID     int
 	PrevLogIndex int
 	PrevLogTerm  int
-	LeaderCommit int
+	LeaderCommit int //领导人已经提交的日志的索引值
 	log          []LogEntry
 }
 
@@ -179,24 +179,32 @@ type AppendEntriesReply struct {
 	Success bool
 }
 
-//
+func Min(x, y int) int {
+	if x < y {
+		return x
+	}
+	return y
+}
+
+//如果被调用，那么重置选举超时时间
 func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply) {
-	rf.heatBeatCh <- true
+	//rf.heatBeatCh <- true、
+	rf.heartBeatCh <- struct{}{} //发送已接收到心跳的通知
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
-	rf.role = Follower
+	//rf.role = Follower
 	reply.Term = rf.currentTerm
-	if args.Term < rf.currentTerm {
+	if args.Term < rf.currentTerm { //对方的任期号比自己的还要小
 		reply.Success = false
-	} else if len(args.log) == 0 {
-		reply.Success = true
-	} else if rf.log[args.PrevLogIndex].term != args.PrevLogTerm {
+	} else if args.Term > rf.currentTerm { //对方的任期号比自己的大
+		rf.currentTerm = args.Term
+	} else if rf.log[args.PrevLogIndex].term != args.PrevLogTerm { //前一个日志项不相等
 		reply.Success = false
-	} else if rf.log[args.PrevLogIndex+1].term != args.Term {
-		rf.log = rf.log[:args.PrevLogIndex+1]
-		rf.log = append(rf.log, args.log[:])
-		if args.LeaderCommit > rf.commitIndex {
-			rf.commitIndex = min(args.LeaderCommit, len(rf.log)-1)
+	} else {
+		rf.log = rf.log[:args.PrevLogIndex+1]   //删除后面可能不一致的日志项
+		rf.log = append(rf.log, args.log[:]...) //添加新的日志项
+		if args.LeaderCommit > rf.commitIndex { //更新已提交索引
+			rf.commitIndex = Min(args.LeaderCommit, len(rf.log))
 		}
 		if rf.commitIndex > rf.lastApplied {
 			rf.lastApplied++
@@ -211,24 +219,32 @@ func (rf *Raft) AppendEntries(args *AppendEntriesArgs, reply *AppendEntriesReply
 //
 func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 	// Your code here (2A, 2B).
-	rf.votedCh <- true
+	//rf.votedCh <- true
 
 	rf.mu.Lock()
 	defer rf.mu.Unlock()
 
-	DPrintf("request incoming.[method :RequestVote] CandidateID: %s, LastLogTerm : %d, LastLogIndex : %d,currentTerm : %d,currentLogLength : %d\n", args.CandidateID, args.LastLogTerm, args.LastLogIndex, len(rf.log))
+	DPrintf("request incoming.[method :RequestVote] CandidateID: %v, LastLogTerm : %d, LastLogIndex : %d,currentTerm : %d,currentLogLength : %d\n", args.CandidateID, args.LastLogTerm, args.LastLogIndex, args.Term, len(rf.log))
 
+	if rf.votedFor == nil {
+		DPrintf("has not voted. self :%d ", rf.me)
+	} else {
+		DPrintf("has voted. self :%d,voteFor : %v ", rf.me, rf.votedFor)
+	}
+	DPrintf("CurrentTerm : %d", rf.currentTerm)
 	if args.Term < rf.currentTerm { //对方的任期号比自己的还要小
 	} else if rf.votedFor == nil || rf.votedFor == args.CandidateID { //如果还没投过票 或者之前已经投过给他
+		DPrintf("check vote condition.")
 		if args.LastLogTerm > rf.currentTerm {
 			reply.VoteGranted = true
 			rf.role = Follower
-			DPrintf("Agree to vote. CandidateID : %s", args.CandidateID)
+			DPrintf("Agree to vote. CandidateID : %v", args.CandidateID)
+			return
 		} else if args.LastLogTerm == rf.currentTerm {
-			if args.LastLogIndex >= len(rf.log) {
+			if args.LastLogIndex < len(rf.log) && rf.log[args.LastLogIndex].term == args.LastLogTerm {
 				reply.VoteGranted = true
 				rf.role = Follower
-				DPrintf("Agree to vote. CandidateID : %s", args.CandidateID)
+				DPrintf("Agree to vote. CandidateID : %v", args.CandidateID)
 				return
 			}
 		}
@@ -236,7 +252,7 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 
 	reply.VoteGranted = false
 	reply.Term = rf.currentTerm
-	DPrintf("Reject to vote. CandidateID : %s", args.CandidateID)
+	DPrintf("Reject to vote. CandidateID : %v", args.CandidateID)
 	return
 }
 
@@ -270,6 +286,9 @@ func (rf *Raft) RequestVote(args *RequestVoteArgs, reply *RequestVoteReply) {
 // the struct itself.
 //
 func (rf *Raft) sendRequestVote(server int, args *RequestVoteArgs, reply *RequestVoteReply) bool {
+	if args == nil {
+		DPrintf("args is nill.\n")
+	}
 	ok := rf.peers[server].Call("Raft.RequestVote", args, reply)
 	return ok
 }
@@ -330,83 +349,139 @@ func Make(peers []*labrpc.ClientEnd, me int,
 
 	// initialize from state persisted before a crash
 	rf.readPersist(persister.ReadRaftState())
+	rf.heartBeatCh = make(chan struct{}, 1)
+	rf.votedCh = make(chan bool, 1)
 	rf.role = Follower
+	rf.currentTerm = 0
+	rf.votedFor = nil
+	rf.log = make([]LogEntry, 0, 100)
+	rf.log = append(rf.log, LogEntry{rf.currentTerm, nil}) //初始化零号索引
+	rf.nextIndex = make(map[*labrpc.ClientEnd]int)
+	rf.matchIndex = make(map[*labrpc.ClientEnd]int)
+	rf.commitIndex = 0
+	heartbeatTimeout := 0
+	for _, peer := range rf.peers {
+		rf.nextIndex[peer] = len(rf.log) //对于每一个服务器，需要发送给他的下一个日志条目的索引值（初始化为领导人最后索引值加一）
+		rf.matchIndex[peer] = 0          //从0开始
+	}
 	go func(raft *Raft) {
-		random := rand.New(time.Now())
+		random := rand.New(rand.NewSource(time.Now().UnixNano()))
 		for {
-
+			DPrintf("loop...\n")
 			if raft.role == Follower {
-				timeout := 150 + random.Intn(150)
-				ticker := time.NewTicker(timeout * time.Second)
+				DPrintf("Current role is follower. self : %d", me)
+				timeout := 150 + random.Intn(150) //选举超时时间为150-300ms
+				ticker := time.NewTicker(time.Duration(timeout) * time.Millisecond)
 				select {
-				case <-rf.heatBeatCh:
+				case <-rf.heartBeatCh: //收到心跳，要重置选举超时时钟
 					ticker.Stop()
-				case <-rf.votedCh:
+					DPrintf("Reset timer. self %d", me)
+				case <-rf.votedCh: //收到投票
 					ticker.Stop()
 				case <-ticker.C:
-					//timeout
+					//timeout超时，是时候发出选举投票的请求了
+					DPrintf("It's time to start election. self : %d", me)
 					raft.mu.Lock()
 					defer raft.mu.Unlock()
 					raft.role = Candidate
-					raft.votedFor = raft.peers[me]
+					raft.votedFor = raft.peers[me] //投给自己
 				}
 			}
-			if raft.role == Candidate {
-				raft.currentTerm++
-				go func() {
-					votedCount := 0
-					for index, peer := range raft.peers {
-						args := RequestVoteArgs{
-							raft.currentTerm,
-							raft.peers[me],
-							len(raft.log) - 1,
-							raft.log[len(raft.log)-1].term,
-						}
-						var reply RequestVoteReply
-						if ok := raft.sendRequestVote(index, &args, &reply); !ok {
-							continue
-						}
-						if reply.VoteGranted {
-							votedCount++
-						}
-						if votedCount >= len(peers)/2+1 {
-							raft.role = Leader
-						}
-					}
-				}()
+			lastLogIndex := 0
+			lastLogTerm := 0
+			if len(raft.log) > 0 {
+				lastLogIndex = len(raft.log) - 1
+				lastLogTerm = raft.log[len(raft.log)-1].term
 			}
-			if raft.role == Leader {
-				commitedCount := 0
+			if raft.role == Candidate { //发起投票
+				raft.currentTerm++
+				DPrintf("Start request vote. self : %d, currentTerm : %d", me, raft.currentTerm)
+				// go func() {
+				votedCount := 1 //自己给自己投票
+				raft.votedFor = raft.peers[me]
 				for index, peer := range raft.peers {
-					if peer == raft.peers[me] {
+					if index == me {
 						continue
 					}
-					args := AppendEntriesArgs{raft.currentTerm,
-						raft.me,
-						raft.nextIndex[peer],
-						raft.log[raft.nextIndex[peer]].term,
-						raft.commitIndex,
-						nil,
+					DPrintf("Send request-vote to peer : %v. self : %d, index : %d\n", peer, me, index)
+					args := RequestVoteArgs{
+						raft.currentTerm,
+						raft.peers[me],
+						lastLogIndex,
+						lastLogTerm,
 					}
-					var reply AppendEntriesReply
-					if ok := rf.peers[index].Call("Raft.AppendEntries", &args, &reply); ok {
-						if reply.Term == raft.currentTerm {
-							if reply.Success {
-								raft.nextIndex[peer] = len(raft.log) + 1
-								raft.matchIndex[peer] = len(raft.log)
-								if raft.matchIndex[peer] >= raft.commitIndex {
-									commitedCount++
+					var reply RequestVoteReply
+					if ok := raft.sendRequestVote(index, &args, &reply); !ok {
+
+						DPrintf("Request vote FAILED. self : %d, peer : %v,index : %d", me, peer, index)
+						continue
+					}
+					if reply.VoteGranted {
+						DPrintf("Acquire one voted. self : %v", me)
+						votedCount++
+					}
+
+				}
+				if votedCount >= len(peers)/2+1 {
+					DPrintf("Win the election. self : %v", me)
+					raft.role = Leader
+					heartbeatTimeout = 1
+					for k, v := range rf.nextIndex {
+						DPrintf("Update nextIndex. self : %d,peer : %v, v : %d\n", me, k, v)
+						rf.nextIndex[k] = lastLogIndex + 1
+					}
+				} else { //选举失败，进入下一轮
+					rf.role = Follower
+				}
+				DPrintf("End to request vote")
+				// }()
+			}
+			if raft.role == Leader {
+				DPrintf("Current role is leader. self : %d, currentTerm %d ", me, rf.currentTerm)
+				ticker := time.NewTicker(time.Duration(heartbeatTimeout) * time.Millisecond) //发送心跳的间隔不能超过1秒10次
+				select {
+				case <-ticker.C:
+					//timeout超时,发出心跳
+					//commitedCount := 0
+				heartbeat_loop:
+					for index, peer := range raft.peers {
+						if peer == raft.peers[me] {
+							continue
+						}
+						args := AppendEntriesArgs{raft.currentTerm,
+							raft.me,
+							lastLogIndex,
+							lastLogTerm,
+							raft.commitIndex,
+							nil, //心跳发送空日志
+						}
+						var reply AppendEntriesReply
+						if ok := rf.peers[index].Call("Raft.AppendEntries", &args, &reply); ok {
+							if reply.Term == raft.currentTerm {
+								if reply.Success { //更新下次发送给对方的日志索引
+									raft.nextIndex[peer] = lastLogIndex + 1
+									raft.matchIndex[peer] = lastLogIndex
+									// if raft.matchIndex[peer] >= raft.commitIndex {
+									// 	commitedCount++
+									// }
+								} else {
+									raft.nextIndex[peer]--
 								}
-							} else {
-								raft.nextIndex[peer]--
+							} else if reply.Term > raft.currentTerm {
+								//恢复为跟随者身份
+								raft.role = Follower
+								raft.currentTerm = reply.Term
+								break heartbeat_loop
 							}
 						}
 					}
+					heartbeatTimeout = 100
+					// commit
+					// if commitedCount > len(raft.peers)/2+1 && raft.log[len(raft.log)].term == raft.currentTerm {
+					// 	raft.commitIndex = len(raft.log)
+					// }
 				}
-				// commit
-				if commitedCount > len(raft.peers)/2+1 && raft.log[len(raft.log)].term == raft.currentTerm {
-					raft.commitIndex = len(raft.log)
-				}
+
 			}
 		}
 	}(rf)
